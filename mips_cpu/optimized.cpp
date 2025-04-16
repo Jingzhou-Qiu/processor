@@ -1,3 +1,4 @@
+
 #include "processor.h"
 #include <cstring>
 #include <iostream>
@@ -7,10 +8,12 @@
 #include <cstdint>
 #include <tuple>
 
-const size_t instructionQueue_size = 10;
-const int reorder_buffer_size = 2;
-const int load_store_buffer_size = 10;
-const int sheduleing_queue_size = 20;
+const size_t instructionQueue_size = 2;
+const int reorder_buffer_size = 20;
+const int load_store_buffer_size = 5;
+const int sheduleing_queue_size = 10;
+const int scalar_size = 5;
+
 
 class InstructionQueue {
     private:
@@ -143,25 +146,6 @@ private:
 
 public:
     ReorderBuffer() : head(0), tail(0), count(0) {}
-    void printAllEntries() const { 
-        for (int i = 0; i < MAX_SIZE; ++i) { 
-            const auto& entry = buffer[i]; 
-            std::cout << "Entry " << i << ": Execute: " << (entry.execute ? "Yes" : "No") 
-                      << ", DestReg: " << entry.dest_reg 
-                      << ", Addr: 0x" << std::hex << entry.address << std::dec 
-                      << ", Val: " << entry.value 
-                      << ", PC: 0x" << std::hex << entry.pc << std::dec 
-                      << ", MemWrite: " << (entry.mem_write ? "Yes" : "No") 
-                      << ", RegWrite: " << (entry.reg_write ? "Yes" : "No") 
-                      << ", Halfword: " << (entry.halfword ? "Yes" : "No") 
-                      << ", Byte: " << (entry.byte ? "Yes" : "No") 
-                      << ", Jump: " << (entry.jump ? "Yes" : "No") 
-                      << ", Flush: " << (entry.flush ? "Yes" : "No") 
-                      << std::endl; 
-        } 
-    }
-
-
 
     // Check if there is space in the ROB
     bool hasSpace() const {
@@ -292,7 +276,7 @@ public:
     void commitByROBID(int ROBID) {
         for (int i = head; i != tail; i = (i + 1) % MAX_SIZE) {
             if (buffer[i].ROBID == ROBID) {
-                buffer[i].complete = true; // Mark the entry as complete
+                buffer[i].complete = true; 
             }
         }
     }
@@ -313,7 +297,7 @@ public:
 
     void processValidMemoryInstructions(ReorderBuffer& reorder_buffer) {
         for (int i = head; i != tail; i = (i + 1) % MAX_SIZE) {
-            if (buffer[i].execute) {
+            if (buffer[i].execute & buffer[i].is_store){
                 reorder_buffer.update(buffer[i].ROBID, buffer[i].value, false, buffer[i].address, false, true);
             }
         }
@@ -328,7 +312,6 @@ public:
                 bool can_execute = true;
                 uint32_t load_start = buffer[i].address;
                 uint32_t load_end = load_start + (buffer[i].byte ? 1 : (buffer[i].halfword ? 2 : 4));
-
                 
                 for (int j = head; j != i; j = (j + 1) % MAX_SIZE) { 
                     if (buffer[j].is_store) {
@@ -345,6 +328,8 @@ public:
                                 can_execute = false;
                                 break; 
                             } 
+                            can_execute = false;
+                            break;
                         }
                     }
                 }
@@ -390,6 +375,8 @@ public:
         buffer[lsb_index].complete = true;
         return resolved_value;
     }
+
+
     bool commit(int ROBID) {
         for (int i = head; i != tail; i = (i + 1) % MAX_SIZE) {
             if (buffer[i].ROBID == ROBID) {
@@ -417,9 +404,6 @@ public:
         }
     }
 
-
-
-
 };
 
 
@@ -431,15 +415,15 @@ class SchedulingQueue {
     public:
         // Control flags and instruction details bundled together
         struct InstructionDetails {
-            unsigned ALU_op : 2;   // ALU operation code
-            bool memory : 1;       // Memory operation
-            bool jump_reg : 1;     // 1 if jr
-            bool link : 1;         // 1 if jal
-            bool branch : 1;       // 1 if branch
-            bool bne : 1;          // 1 if bne
-            int opcode : 6;        // Instruction opcode (6 bits in MIPS)
-            int funct : 6;         // Function code (6 bits in MIPS)
-            int shamt : 5;         // Shift amount (5 bits in MIPS)
+            unsigned ALU_op;   // ALU operation code
+            bool memory;       // Memory operation
+            bool jump_reg;     // 1 if jr
+            bool link;         // 1 if jal
+            bool branch;       // 1 if branch
+            bool bne;          // 1 if bne
+            int opcode;        // Instruction opcode (6 bits in MIPS)
+            int funct;         // Function code (6 bits in MIPS)
+            int shamt;         // Shift amount (5 bits in MIPS)
         };
         
     private:
@@ -572,8 +556,6 @@ class SchedulingQueue {
 
 
 
-
-
 void Processor:: optimized_processor_advance(){
     static uint32_t current_pc = 0;
     static InstructionQueue instruction_queue;
@@ -582,24 +564,28 @@ void Processor:: optimized_processor_advance(){
     static LoadStoreBuffer load_store_buffer;
     static SchedulingQueue scheduling_queue;
 
-
     // reorder_buffer.printAllEntries();
-
+for (int i = 0; i < scalar_size; i++){
 {
     //commit & flush & memory store
     auto [index, entry] = reorder_buffer.getFrontEntryWithIndex();
-    if (index != -1){
+      if (index != -1){
         if (entry.mem_write){   
             uint32_t read_data_mem;
             uint32_t write_data_mem = entry.value;
             if (entry.halfword || entry.byte){
-                memory->access(entry.address, read_data_mem, write_data_mem, true, false);
-                write_data_mem = entry.halfword ? (read_data_mem & 0xffff0000) | (write_data_mem & 0xffff) : 
-                entry.byte ? (read_data_mem & 0xffffff00) | (write_data_mem & 0xff): write_data_mem;
+                if(memory->access(entry.address, read_data_mem, write_data_mem, true, false)){
+                    write_data_mem = entry.halfword ? (read_data_mem & 0xffff0000) | (write_data_mem & 0xffff) : 
+                    entry.byte ? (read_data_mem & 0xffffff00) | (write_data_mem & 0xff): write_data_mem;
+                }else{
+                    break;
+                }
             }
-            memory->access(entry.value, read_data_mem, write_data_mem, false, true);
-            //missing update load-store buffer!!!!!
+            if(!(memory->access(entry.address, read_data_mem, write_data_mem, false, true))){
+                break;
+            }
         }
+
         if(entry.reg_write){
             uint32_t read_data_1 = 0;
             uint32_t read_data_2 = 0;
@@ -612,17 +598,17 @@ void Processor:: optimized_processor_advance(){
             load_store_buffer.flush();
             scheduling_queue.flush();
             current_pc = entry.address;
-        }
+        }else{
         reorder_buffer.commit();
         load_store_buffer.commitByROBID(index);
+        }
         regfile.pc = entry.pc;
-        // std::cout << "PC (hex): 0x" << std::hex << entry.pc << std::dec << std::endl;
-
     }
    
 }
+}
 
-
+for (int i = 0; i < scalar_size; i++){
 {
     // load 
     load_store_buffer.advanceHeadIfComplete();
@@ -634,6 +620,7 @@ void Processor:: optimized_processor_advance(){
         uint32_t final_value = 0;
         if(memory->access(address, read_data_mem, 0, true, false)){
             final_value = load_store_buffer.resolveStoreValue(index, read_data_mem);
+            final_value &= control.halfword ? 0xffff : control.byte ? 0xff : 0xffffffff;
             load_store_buffer.update(index + 64, final_value);
             scheduling_queue.update(index + 64, final_value);
             predicative_reg_file.update(index + 64, final_value);
@@ -643,7 +630,10 @@ void Processor:: optimized_processor_advance(){
     }
 
 }
+}
 
+
+for (int i = 0; i < scalar_size; i++){
 {
     // execute 
     auto [success, operand1, operand2, robID, control, index] = scheduling_queue.deallocateEntry();
@@ -651,13 +641,12 @@ void Processor:: optimized_processor_advance(){
         alu.generate_control_inputs(control.ALU_op, control.funct, control.opcode);
         uint32_t alu_zero = 0;
         uint32_t alu_result = alu.execute(operand1, operand2, alu_zero);
-
         // update buffer 
         predicative_reg_file.update(index, alu_result);
         load_store_buffer.update(index, alu_result);
         scheduling_queue.update(index, alu_result);
         if(control.jump_reg || control.branch){
-            if ((!control.bne && alu_zero) || (control.bne && !alu_zero)){
+            if ((control.branch && !control.bne && alu_zero) || (control.branch && control.bne && !alu_zero)){
                 reorder_buffer.update(robID, 0, true, 0, true, false);
             }else if(control.jump_reg){
                 reorder_buffer.update(robID, 0, true, alu_result, true, true);
@@ -670,8 +659,10 @@ void Processor:: optimized_processor_advance(){
 
     }
 }
+}
 
 
+for (int i = 0; i < scalar_size; i++){
 {
 
     if (!instruction_queue.is_empty() && reorder_buffer.hasSpace() && scheduling_queue.hasUnallocatedEntry()&&load_store_buffer.hasSpace()){
@@ -703,8 +694,8 @@ void Processor:: optimized_processor_advance(){
         bool valid_2 = 1;
 
 
-        if (!control.jump){
-
+        if (!opcode){
+            // Rtype 
             if (control.shift){
                 tag_1 = 0;
                 value_1 = shamt;
@@ -729,12 +720,33 @@ void Processor:: optimized_processor_advance(){
             }
 
         }
-
-        if (control.jump_reg){
+        else if (control.jump_reg){
             PredicativeReg reg_1 = predicative_reg_file.read(rs);
             tag_1 = reg_1.tag;
             value_1 = reg_1.value;
             valid_1 = reg_1.valid;
+        }
+        else if (control.branch){
+            PredicativeReg reg_1 = predicative_reg_file.read(rs);
+            tag_1 = reg_1.tag;
+            value_1 = reg_1.value;
+            valid_1 = reg_1.valid;
+
+            PredicativeReg reg_2 = predicative_reg_file.read(rt);
+            tag_2 = reg_2.tag;
+            value_2 = reg_2.value;
+            valid_2 = reg_2.valid;
+        }
+        else{
+            PredicativeReg reg_1 = predicative_reg_file.read(rs);
+            tag_1 = reg_1.tag;
+            value_1 = reg_1.value;
+            valid_1 = reg_1.valid;
+
+
+            tag_2 = 0;
+            value_2 = imm;
+            valid_2 = true;
         }
         
 
@@ -751,7 +763,7 @@ void Processor:: optimized_processor_advance(){
         };
 
         if (control.jump && !control.jump_reg){
-            addr = ((decode_pc + 4)& 0xf0000000) | (addr << 2);
+            addr = ((decode_pc + 4)& 0xf0000000) & (addr << 2);
             current_pc = addr;
             instruction_queue.flush();
         }else if (control.branch){
@@ -767,7 +779,8 @@ void Processor:: optimized_processor_advance(){
             if (control.mem_read) {
                 index = load_store_buffer.put(true, index, -1, 0, control.byte, control.halfword, false, ROBID) + 64;
             } else if (control.mem_write) {
-                load_store_buffer.put(valid_2, index, tag_2, value_2, control.byte, control.halfword, true, ROBID);
+                PredicativeReg reg3 = predicative_reg_file.read(rt);
+                load_store_buffer.put(reg3.valid, index, reg3.tag, reg3.value, control.byte, control.halfword, true, ROBID);
             }
 
             if (control.reg_write) {
@@ -779,24 +792,24 @@ void Processor:: optimized_processor_advance(){
 
 }
 
-{
-    // fetch
-    uint32_t fetch_instruction;
-    memory->access(current_pc, fetch_instruction, 0, 1, 0);
-    if (instruction_queue.put(fetch_instruction, current_pc)) {
-        current_pc += 4;
-    }
 }
+
+
+for (int i = 0; i < scalar_size; i++){
+    {
+        // fetch
+        uint32_t fetch_instruction;
+        if(memory->access(current_pc, fetch_instruction, 0, 1, 0)){
+            if (instruction_queue.put(fetch_instruction, current_pc)) {
+                current_pc += 4;
+            }
+        }
+    }
+
+}
+
     
 }
-
-
-
-
-
-
-
-
 
 
 

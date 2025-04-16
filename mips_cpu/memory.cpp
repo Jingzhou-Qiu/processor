@@ -16,9 +16,12 @@ using namespace std;
 bool Cache::isHit(uint32_t address, uint32_t &loc) {
     int idx = getIndex(address);
     int tag = getTag(address);
+    DEBUG(cout << name << " In isHIT: " << " tag: " << tag << endl;)
 
     for (int w=0; w<assoc; w++) {
+        DEBUG(cout << "way: " << w << " line tag: " << line[idx*assoc+w].tag << " replBits: " << (int)line[idx*assoc+w].replBits << endl;)
         if (line[idx*assoc+w].valid && line[idx*assoc+w].tag == tag) {
+            DEBUG(cout << name << " isHit is true" << endl;)
             loc = idx*assoc+w;
             updateReplacementBits(idx, w);
             return true;
@@ -30,9 +33,12 @@ bool Cache::isHit(uint32_t address, uint32_t &loc) {
 // Update replacement bits after access
 void Cache::updateReplacementBits(int idx, int way) {
     uint8_t curRepl = line[idx*assoc+way].replBits;
+    DEBUG(cout << name << " curRepl: " << (int)curRepl << endl;)
     for (int w=0; w<assoc; w++) {
-        if (line[idx*assoc+w].valid && line[idx*assoc+w].replBits > curRepl)
+        if (line[idx*assoc+w].valid && line[idx*assoc+w].replBits > curRepl) {
+            DEBUG(cout << "way " << w << " replBits is: " << (int)line[idx*assoc+w].replBits << " will now decrease by 1" << endl;)
             line[idx*assoc+w].replBits--;
+        }
     }
     line[idx*assoc+way].replBits = assoc-1;
 }
@@ -110,6 +116,7 @@ void Cache::replace(uint32_t address, CacheLine newLine, CacheLine &evictedLine)
     newLine.address = address;
     newLine.tag = getTag(address);
     newLine.valid = true;
+    newLine.replBits = 0;
    
     /* Return if replacement already completed. */ 
     for (int w=0; w<assoc; w++) {
@@ -141,7 +148,7 @@ void Cache::invalidateLine(uint32_t address) {
 }
 
 bool Memory::access(uint32_t address, uint32_t &read_data, uint32_t write_data, bool mem_read, bool mem_write) {
-    if (opt_level == 0 || opt_level == 1 || opt_level == 2) {
+    if (opt_level == 0) {
         if (mem_read) {
             read_data = mem[address/4];
         }
@@ -155,10 +162,12 @@ bool Memory::access(uint32_t address, uint32_t &read_data, uint32_t write_data, 
         return true;
     }
 
+    uint32_t _read_data = read_data;
     if ((mem_read && L1.read(address, read_data)) || (mem_write && L1.write(address, write_data))) {
         return true;
     } else if ((mem_read && L2.read(address, read_data)) || (mem_write && L2.write(address, write_data))) {
         // Read from L2 but don't return a success status until miss penalty is paid off completely
+        read_data = _read_data;
         CacheLine evictedLine;
         L1.replace(address, L2.readLine(address), evictedLine);
 

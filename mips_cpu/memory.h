@@ -8,12 +8,12 @@
 #define CACHE_LINE_SIZE 64
 
 struct CacheLine {
-    uint32_t data[CACHE_LINE_SIZE/4];
-    uint32_t address;
-    int tag;
-    bool valid;
-    bool dirty;
-    uint8_t replBits;
+    uint32_t data[CACHE_LINE_SIZE/4] = {0};
+    uint32_t address = 0;
+    int tag = 0;
+    bool valid = false;
+    bool dirty = false;
+    uint8_t replBits = 0;
 };
 
 class Cache {
@@ -33,6 +33,7 @@ class Cache {
 
             for (int i = 0; i < (size/CACHE_LINE_SIZE); i++) {
                 line[i].valid = false;
+                line[i].replBits = 0;
             }
             
             missCountdown = 0;
@@ -44,10 +45,12 @@ class Cache {
             return address & (CACHE_LINE_SIZE-1);
         }
         int getIndex(uint32_t address) {
-            return (address >> (int)log2(CACHE_LINE_SIZE)) & (size/CACHE_LINE_SIZE-1);
+            return (address >> (int)log2(CACHE_LINE_SIZE)) & (size/CACHE_LINE_SIZE/assoc-1);
         }
         int getTag(uint32_t address) {
-            return address >> (int)log2(size);
+            int index_bits = log2(size/CACHE_LINE_SIZE/assoc);
+            int offset_bits = log2(CACHE_LINE_SIZE);
+            return address >> (index_bits+offset_bits);
         }
 
         // Check if hit in the cache
