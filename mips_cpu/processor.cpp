@@ -74,9 +74,9 @@ void Processor::single_cycle_processor_advance() {
 
     // Read from reg file
     regfile.access(rs, rt, read_data_1, read_data_2, 0, 0, 0);
-    std::cout << "Fetched Instruction: 0x" << std::hex << instruction << std::dec << std::endl;
-    std::cout << "RS: " << rs << ", RT: " << rt << std::endl;
-    std::cout << "Immediate: 0x" << std::hex << imm << std::dec << std::endl;
+    // std::cout << "Fetched Instruction: 0x" << std::hex << instruction << std::dec << std::endl;
+    // std::cout << "RS: " << rs << ", RT: " << rt << std::endl;
+    // std::cout << "Immediate: 0x" << std::hex << imm << std::dec << std::endl;
     // Execution 
     alu.generate_control_inputs(control.ALU_op, funct, opcode);
     // Sign Extend Or Zero Extend the immediate
@@ -88,7 +88,7 @@ void Processor::single_cycle_processor_advance() {
     // Operand 2 is immediate if ALU_src = 1, for I-type
     uint32_t operand_1 = control.shift ? shamt : read_data_1;
     uint32_t operand_2 = control.ALU_src ? imm : read_data_2;
-    std::cout << "Operand 1: " << operand_1 << ", Operand 2: " << operand_2 << std::endl;
+    // std::cout << "Operand 1: " << operand_1 << ", Operand 2: " << operand_2 << std::endl;
     uint32_t alu_zero = 0;
 
     uint32_t alu_result = alu.execute(operand_1, operand_2, alu_zero);

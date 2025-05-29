@@ -137,10 +137,11 @@ int main(int argc, char *argv[]) {
     uint64_t num_cycles = 0;
     while (processor.getPC() <= end_pc) {
         processor.advance();
-        cout << "\nCYCLE " << num_cycles << "\n";
-        processor.printRegFile();
+        // cout << "\nCYCLE " << num_cycles << "\n";
+        // processor.printRegFile();
         num_cycles++;
     }
+    cout << num_cycles;
 
-    cout << "\nCompleted execution in " << (double)num_cycles*(optLevel ? 1 : 125)*0.5 << " nanoseconds.\n";
+    // cout << "\nCompleted execution in " << (double)num_cycles*(optLevel ? 1 : 125)*0.5 << " nanoseconds.\n";
 }

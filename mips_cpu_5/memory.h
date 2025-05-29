@@ -1,0 +1,189 @@
+#ifndef MEMORY
+#define MEMORY
+#include <vector>
+#include <cstdint>
+#include <iostream>
+#include <cmath>
+#include <deque>
+
+
+#define CACHE_LINE_SIZE 64
+
+struct MSHREntry {
+    uint32_t address;
+    bool is_write;
+    uint32_t write_value;
+    int L1_penality;
+    int L2_penality;
+    bool success;
+};
+
+class MSHR {
+
+public:
+    std::deque<MSHREntry> entries;
+    const std::deque<MSHREntry>& getEntries() const {
+        return entries;
+    }
+
+    void insert(uint32_t address, bool is_write, uint32_t value, int L1_penality, int L2_penality) {
+        entries.push_back({address, is_write, value, L1_penality, L2_penality, false});
+    }
+
+    bool contains(uint32_t address) const {
+        for (const auto& entry : entries) {
+            if (entry.address == address) return true;
+        }
+        return false;
+    }
+
+    void print() const {
+        for (const auto& entry : entries) {
+            std::cout << "Address: " << std::hex << entry.address << std::dec
+                      << ", Is Write: " << entry.is_write
+                      << ", Write Value: " << entry.write_value
+                      << ", L1 Penalty: " << entry.L1_penality
+                      << ", L2 Penalty: " << entry.L2_penality
+                      << ", Success: " << entry.success << "\n";
+        }
+    }
+
+    void flush() {
+        entries.clear();
+    }
+};
+
+
+
+
+struct CacheLine {
+    uint32_t data[CACHE_LINE_SIZE/4] = {0};
+    uint32_t address = 0;
+    int tag = 0;
+    bool valid = false;
+    bool dirty = false;
+    uint8_t replBits = 0;
+};
+
+class Cache {
+    private:
+        std::vector<CacheLine> line;
+        int size;
+        int assoc;
+        int missPenalty;
+        int missCountdown;
+        std::string name;
+    public:
+        Cache(std::string nm, int sz, int asc, int penalty) {
+            name = nm;
+            size = sz;
+            assoc = asc;
+            line.resize(size/CACHE_LINE_SIZE);
+
+            for (int i = 0; i < (size/CACHE_LINE_SIZE); i++) {
+                line[i].valid = false;
+                line[i].replBits = 0;
+            }
+            
+            missCountdown = 0;
+            missPenalty = penalty;
+        }
+
+        // offset, index, tag computation
+        int getOffset(uint32_t address) {
+            return address & (CACHE_LINE_SIZE-1);
+        }
+        int getIndex(uint32_t address) {
+            return (address >> (int)log2(CACHE_LINE_SIZE)) & (size/CACHE_LINE_SIZE/assoc-1);
+        }
+        int getTag(uint32_t address) {
+            int index_bits = log2(size/CACHE_LINE_SIZE/assoc);
+            int offset_bits = log2(CACHE_LINE_SIZE);
+            return address >> (index_bits+offset_bits);
+        }
+
+        // Check if hit in the cache
+        bool isHit(uint32_t address, uint32_t &loc);
+
+        // Update replacement bits after access
+        void updateReplacementBits(int idx, int way);
+
+        // Read a word from this cache
+        bool read(uint32_t address, uint32_t &read_data, MSHREntry &entry);
+
+        // Write a word to this cache
+        bool write(uint32_t address, uint32_t write_data, MSHREntry &entry);
+
+        // Call this only if you know that a valid line with matching tag exists at that address 
+        CacheLine readLine(uint32_t address);
+
+        // Call this only if you know that a valid line with matching tag exists at that address 
+        void writeBackLine(CacheLine evictedLine);
+
+        // Replace a line at the set corresponding this address
+        void replace(uint32_t address, CacheLine newLine, CacheLine &evictedLine);
+
+        // Invalidate a line
+        void invalidateLine(uint32_t address);
+
+        // Print a cache line
+        void printLine(uint32_t address) {
+            int idx = getIndex(address);
+            int tag = getTag(address);
+
+            for (int w=0; w<assoc; w++) {
+                if (line[idx*assoc+w].valid && line[idx*assoc+w].tag == tag) {
+                    std::cout<< "Valid:" << line[idx*assoc+w].valid << "\n";
+                    std::cout<< "Address:" << line[idx*assoc+w].address << "\n";
+                    std::cout<< "Tag:" << line[idx*assoc+w].tag << "\n";
+                    std::cout<< "Dirty:" << line[idx*assoc+w].dirty << "\n";
+                    std::cout<< "Replacement Bits:" << line[idx*assoc+w].replBits << "\n";
+                    for (int i = 0; i < CACHE_LINE_SIZE/4; i++) {
+                        std::cout<< "DATA[" << i << "]: " << line[idx*assoc+w].data[i] << "\n";
+                    }
+                    return;
+                }
+            }
+        }
+};
+
+
+class Memory {
+    private:
+        std::vector<uint32_t> mem;
+        Cache L1 = Cache("L1", 32768, 8, 12);
+        Cache L2 = Cache("L2", 262144, 8, 59);
+        int opt_level;
+    public:
+        MSHR mshr;
+        
+        Memory() {
+            mem.resize(2097152, 0);
+            opt_level = 0;
+        }
+        void setOptLevel(int level) {
+            opt_level = level;
+        }
+        // address is the adress which needs to be read or written from
+        // read_data the variable into which data is read, it is passed by reference
+        // write_data is the data which is written into the memory address provided
+        // mem_read specifies whether memory should be read or not
+        // mem_write specifies whether memory whould be written to or not
+        // returns false if there is a cache miss (O1 and above) 
+        // -- currently follows stall-on-miss model, so call every cycle until you see a hit
+        bool access(uint32_t address, uint32_t &read_data, uint32_t write_data, bool mem_read, bool mem_write);
+
+        void tick();
+
+        // given a starting address and number of words from that starting address
+        // this function prints int values at the memory
+        void print(uint32_t address, int num_words) {
+            for (uint32_t i = address; i < address+num_words; ++i) {
+                std::cout<< "MEM[" << std::hex << i << "]: " << mem[i] << std::dec << "\n";
+            }
+        }
+};
+
+
+
+#endif

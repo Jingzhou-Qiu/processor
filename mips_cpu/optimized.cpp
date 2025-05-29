@@ -8,49 +8,70 @@
 #include <cstdint>
 #include <tuple>
 
-const size_t instructionQueue_size = 2;
-const int reorder_buffer_size = 20;
-const int load_store_buffer_size = 5;
-const int sheduleing_queue_size = 10;
-const int scalar_size = 5;
+const size_t instructionQueue_size = 30;
+const int reorder_buffer_size = 50;
+const int load_store_buffer_size = 20;
+const int sheduleing_queue_size = 50;
+const int scalar_size = 1;
 
 
 class InstructionQueue {
     private:
-        std::queue<std::pair<uint32_t, uint32_t>> instruction_queue; // Queue of (instruction, pc)
-        const size_t max_size = instructionQueue_size; 
+        struct InstructionEntry {
+            uint32_t instruction;
+            uint32_t pc;
+            bool     pending; // Valid bit
+        };
+    
+        std::vector<InstructionEntry> instruction_queue; // storage
+        size_t head;   // index of oldest entry
+        size_t tail;   // index one‑past newest entry
+        const size_t max_size = instructionQueue_size;
     
     public:
-        // Add an instruction to the queue
-        bool put(uint32_t instruction, uint32_t pc) {
-            if (instruction_queue.size() >= max_size) {
-                return false; 
-            }
-            instruction_queue.emplace(instruction, pc);
-            return true;
-        }
-
-        bool is_empty(){
-            return instruction_queue.empty();
+        InstructionQueue() : head(0), tail(0) {
+            instruction_queue.resize(max_size);
         }
     
-        // Retrieve and remove the front instruction from the queue
+
+        bool put(uint32_t instruction, uint32_t pc, bool pending) {
+            if ((tail + 1) % max_size != head) {
+                instruction_queue[tail] = {instruction, pc, pending};
+                tail = (tail + 1) % max_size;
+                return true;
+            }
+            return false; 
+        }
+    
+
+        void resolvePendingAddress(uint32_t address, uint32_t value) {
+            for (size_t i = head; i != tail; i = (i + 1) % max_size) {
+                auto &entry = instruction_queue[i];
+                if (entry.pending && entry.pc == address) {
+                    entry.instruction = value;
+                    entry.pending     = false;
+
+                }
+            }
+        }
+    
+        bool is_full()  const { return (tail + 1) % max_size == head; }
+        bool is_empty() const { return tail == head || instruction_queue[head].pending;}
+    
+        // Retrieve & remove the front instruction if it's no longer pending
         std::pair<uint32_t, uint32_t> get() {
-            if (instruction_queue.empty()) {
-                return {0, 0}; // Return a default pair if the queue is empty
+            if (tail != head && !instruction_queue[head].pending) {
+                auto front = instruction_queue[head];
+                head = (head + 1) % max_size;
+                return {front.instruction, front.pc};
             }
-            auto front = instruction_queue.front();
-            instruction_queue.pop();
-            return front;
+            return {0, 0};
         }
-
+    
+    
         void flush() {
-            while (!instruction_queue.empty()) {
-                instruction_queue.pop();
-            }
+            head = tail = 0;
         }
-
-
     };
     
     struct PredicativeReg {
@@ -137,6 +158,7 @@ private:
         bool byte;             // Byte flag
         bool jump;             // Jump flag
         bool flush;
+        bool pending;
     };
 
     std::array<ROBEntry, MAX_SIZE> buffer; // Circular queue
@@ -151,12 +173,12 @@ public:
     bool hasSpace() const {
         return count < MAX_SIZE;
     }
-    bool commit() {        
+    int commit() {        
         // Move head pointer to the next entry
+        int commitIdx = head;
         head = (head + 1) % MAX_SIZE;
         count--;
-        
-        return true; // Successfully committed an entry
+        return commitIdx; // Successfully committed an entry
     }
 
     // Add a new entry to the ROB
@@ -176,6 +198,7 @@ public:
             .byte = byte,
             .jump = jump,
             .flush = false,
+            .pending = false,
         };
 
         int index = tail; // Store the current tail index
@@ -197,9 +220,15 @@ public:
     }
 
 
+    void updatePendingBit(int index) {
+        if (index >= 0 && index < MAX_SIZE) {
+            buffer[index].pending = true;
+        }
+    }
+
     std::tuple<int, ROBEntry> getFrontEntryWithIndex() {
         // Advance the head pointer if the current entry has already been executed or is not ready for execution
-        if (count > 0 && buffer[head].execute == true) {
+        if (count > 0 && buffer[head].execute == true && !buffer[head].pending) {
             return std::make_tuple(head, buffer[head]);
         }
 
@@ -236,6 +265,7 @@ private:
         int ROBID;        // Reorder Buffer ID
         bool execute;
         bool complete;
+        bool pending;       // cache miss, load in MSHR
     };
 
     std::array<LSBEntry, MAX_SIZE> buffer; // Circular array
@@ -265,6 +295,7 @@ public:
             .ROBID = ROBID,
             .execute = false,
             .complete = false,
+            .pending = false,
         };
 
         int index = tail; // Store the current tail index
@@ -273,10 +304,21 @@ public:
         return index; // Return the index where the entry was added
     }
 
+
     void commitByROBID(int ROBID) {
-        for (int i = head; i != tail; i = (i + 1) % MAX_SIZE) {
+        for (int i = head, count = 0; count < this->count; i = (i + 1) % MAX_SIZE, ++count) {
             if (buffer[i].ROBID == ROBID) {
                 buffer[i].complete = true; 
+            }
+        }
+    }
+    
+    void resolvePendingState(uint32_t address, uint32_t value) {
+        for (int i = head, count = 0; count < this->count; i = (i + 1) % MAX_SIZE, ++count) {
+            if (buffer[i].pending && buffer[i].address == address) {
+                buffer[i].value = value;
+                buffer[i].pending = false;
+                buffer[i].valid_value = true;
             }
         }
     }
@@ -296,7 +338,7 @@ public:
     }
 
     void processValidMemoryInstructions(ReorderBuffer& reorder_buffer) {
-        for (int i = head; i != tail; i = (i + 1) % MAX_SIZE) {
+        for (int i = head, count = 0; count < this->count; i = (i + 1) % MAX_SIZE, ++count) {
             if (buffer[i].execute & buffer[i].is_store){
                 reorder_buffer.update(buffer[i].ROBID, buffer[i].value, false, buffer[i].address, false, true);
             }
@@ -304,8 +346,8 @@ public:
     }
 
     void updateExecutionBit() {
-        for (int i = head; i != tail; i = (i + 1) % MAX_SIZE) {
-            if (buffer[i].is_store && buffer[i].valid_address && buffer[i].valid_value){
+        for (int i = head, count = 0; count < this->count; i = (i + 1) % MAX_SIZE, ++count) {
+                if (buffer[i].is_store && buffer[i].valid_address && buffer[i].valid_value){
                 buffer[i].execute = true;
             }
             if (!buffer[i].is_store && buffer[i].valid_address && !buffer[i].execute) { 
@@ -341,13 +383,19 @@ public:
         }
     }
 
-    std::tuple<bool, uint32_t, bool, bool, int, int> getExecutableLoad() {
-        for (int i = head; i != tail; i = (i + 1) % MAX_SIZE) {
-            if (!buffer[i].is_store && buffer[i].execute && !buffer[i].complete) {
-                return {true, buffer[i].address, buffer[i].halfword, buffer[i].byte, i, buffer[i].ROBID}; 
+    std::tuple<bool, uint32_t, bool, bool, int, int, bool, uint32_t> getExecutableLoad() {
+        for (int i = head, count = 0; count < this->count; i = (i + 1) % MAX_SIZE, ++count) {
+            if (!buffer[i].is_store && buffer[i].execute && !buffer[i].complete && !buffer[i].pending) {
+                return {true, buffer[i].address, buffer[i].halfword, buffer[i].byte, i, buffer[i].ROBID, buffer[i].valid_value, buffer[i].value}; 
             }
         }
-        return {false, 0, false, false, -1, -1}; // No executable load found
+        return {false, 0, false, false, -1, -1, false, 0}; // No executable load found
+    }
+
+    void updatePendingBit(int index) {
+        if (index >= 0 && index < MAX_SIZE) {
+            buffer[index].pending = true;
+        }
     }
     
     uint32_t resolveStoreValue(int lsb_index, uint32_t memory_value) {
@@ -376,16 +424,6 @@ public:
         return resolved_value;
     }
 
-
-    bool commit(int ROBID) {
-        for (int i = head; i != tail; i = (i + 1) % MAX_SIZE) {
-            if (buffer[i].ROBID == ROBID) {
-                buffer[i].complete = true; // Mark the entry as complete
-                return true; // Successfully committed the entry
-            }
-        }
-        return false; // No matching entry found
-    }
 
     void advanceHeadIfComplete() {
         while (count > 0 && buffer[head].complete) {
@@ -467,7 +505,8 @@ class SchedulingQueue {
             }
             return false;
         }
-    
+
+
         // Allocate an entry with bundled instruction details
         int allocateEntry(int tag1, uint32_t value1, bool valid1, int tag2, uint32_t value2, bool valid2, 
                           const InstructionDetails& inst, int ROBID) {
@@ -550,12 +589,6 @@ class SchedulingQueue {
 
 
 
-
-
-
-
-
-
 void Processor:: optimized_processor_advance(){
     static uint32_t current_pc = 0;
     static InstructionQueue instruction_queue;
@@ -564,48 +597,66 @@ void Processor:: optimized_processor_advance(){
     static LoadStoreBuffer load_store_buffer;
     static SchedulingQueue scheduling_queue;
 
-    // reorder_buffer.printAllEntries();
+    memory->tick();
+    auto &entries = memory->mshr.entries;
+
+
+
+    size_t i = 0;
+    while (i < entries.size()) {
+        auto &entry = entries[i];
+        if (entry.success) {
+            if (entry.is_write) {
+                int index = reorder_buffer.commit();
+                load_store_buffer.commitByROBID(index);
+            }
+            load_store_buffer.resolvePendingState(entry.address, entry.write_value);
+            instruction_queue.resolvePendingAddress(entry.address, entry.write_value);
+            entries.erase(entries.begin() + i);
+        } else {
+            ++i;
+        }
+    }
+
+
+
+
+// reorder_buffer.printAllEntries();
 for (int i = 0; i < scalar_size; i++){
-{
-    //commit & flush & memory store
-    auto [index, entry] = reorder_buffer.getFrontEntryWithIndex();
-      if (index != -1){
-        if (entry.mem_write){   
-            uint32_t read_data_mem;
-            uint32_t write_data_mem = entry.value;
-            if (entry.halfword || entry.byte){
-                if(memory->access(entry.address, read_data_mem, write_data_mem, true, false)){
-                    write_data_mem = entry.halfword ? (read_data_mem & 0xffff0000) | (write_data_mem & 0xffff) : 
-                    entry.byte ? (read_data_mem & 0xffffff00) | (write_data_mem & 0xff): write_data_mem;
-                }else{
+    {
+        //commit & flush & memory store
+        auto [index, entry] = reorder_buffer.getFrontEntryWithIndex();
+            if (index != -1){
+            if (entry.mem_write){   
+                uint32_t read_data_mem;
+                uint32_t write_data_mem = entry.value;
+                if(!(memory->access(entry.address, read_data_mem, write_data_mem, false, true))){
+                    reorder_buffer.updatePendingBit(index);
                     break;
                 }
             }
-            if(!(memory->access(entry.address, read_data_mem, write_data_mem, false, true))){
-                break;
+    
+            if(entry.reg_write){
+                uint32_t read_data_1 = 0;
+                uint32_t read_data_2 = 0;
+                regfile.access(0, 0, read_data_1, read_data_2, entry.dest_reg, true, entry.value);
             }
+            if(entry.flush){
+                instruction_queue.flush();
+                predicative_reg_file.syncWithRealRegisters(regfile);
+                reorder_buffer.flush();
+                load_store_buffer.flush();
+                scheduling_queue.flush();
+                current_pc = entry.address;
+                memory->mshr.flush();
+            }else{
+            int commitIndex = reorder_buffer.commit();
+            load_store_buffer.commitByROBID(commitIndex);
+            }
+            regfile.pc = entry.pc;
         }
-
-        if(entry.reg_write){
-            uint32_t read_data_1 = 0;
-            uint32_t read_data_2 = 0;
-            regfile.access(0, 0, read_data_1, read_data_2, entry.dest_reg, true, entry.value);
-        }
-        if(entry.flush){
-            instruction_queue.flush();
-            predicative_reg_file.syncWithRealRegisters(regfile);
-            reorder_buffer.flush();
-            load_store_buffer.flush();
-            scheduling_queue.flush();
-            current_pc = entry.address;
-        }else{
-        reorder_buffer.commit();
-        load_store_buffer.commitByROBID(index);
-        }
-        regfile.pc = entry.pc;
+        
     }
-   
-}
 }
 
 for (int i = 0; i < scalar_size; i++){
@@ -614,19 +665,20 @@ for (int i = 0; i < scalar_size; i++){
     load_store_buffer.advanceHeadIfComplete();
     load_store_buffer.updateExecutionBit();
     load_store_buffer.processValidMemoryInstructions(reorder_buffer);
-    auto [success, address, halfword, byte, index, ROBID] = load_store_buffer.getExecutableLoad();
+    auto [success, address, halfword, byte, index, ROBID, valid_value, value] = load_store_buffer.getExecutableLoad();
     if (success){
-        uint32_t read_data_mem = 0;
+        uint32_t read_data_mem = value;
         uint32_t final_value = 0;
-        if(memory->access(address, read_data_mem, 0, true, false)){
+        if (valid_value||memory->access(address, read_data_mem, 0, true, false)){
             final_value = load_store_buffer.resolveStoreValue(index, read_data_mem);
             final_value &= control.halfword ? 0xffff : control.byte ? 0xff : 0xffffffff;
             load_store_buffer.update(index + 64, final_value);
             scheduling_queue.update(index + 64, final_value);
             predicative_reg_file.update(index + 64, final_value);
             reorder_buffer.update(ROBID, final_value, false, 0, false, false);
-        }   
-
+        }else{
+            load_store_buffer.updatePendingBit(index);
+        }
     }
 
 }
@@ -777,7 +829,7 @@ for (int i = 0; i < scalar_size; i++){
         if (!control.jump || control.link || control.jump_reg){
             int index = scheduling_queue.allocateEntry(tag_1, value_1, valid_1, tag_2, value_2, valid_2, control_detail, ROBID);
             if (control.mem_read) {
-                index = load_store_buffer.put(true, index, -1, 0, control.byte, control.halfword, false, ROBID) + 64;
+                index = load_store_buffer.put(false, index, -1, 0, control.byte, control.halfword, false, ROBID) + 64;
             } else if (control.mem_write) {
                 PredicativeReg reg3 = predicative_reg_file.read(rt);
                 load_store_buffer.put(reg3.valid, index, reg3.tag, reg3.value, control.byte, control.halfword, true, ROBID);
@@ -795,21 +847,23 @@ for (int i = 0; i < scalar_size; i++){
 }
 
 
-for (int i = 0; i < scalar_size; i++){
+for (int i = 0; i < 1; i++){
     {
         // fetch
         uint32_t fetch_instruction;
-        if(memory->access(current_pc, fetch_instruction, 0, 1, 0)){
-            if (instruction_queue.put(fetch_instruction, current_pc)) {
-                current_pc += 4;
-            }
+        if (instruction_queue.is_full()){
+            break;
         }
+        
+        if(memory->access(current_pc, fetch_instruction, 0, 1, 0)){
+            instruction_queue.put(fetch_instruction, current_pc, false);
+        }else{
+            instruction_queue.put(0, current_pc, true);
+        }
+        current_pc += 4;
     }
 
 }
 
     
 }
-
-
-

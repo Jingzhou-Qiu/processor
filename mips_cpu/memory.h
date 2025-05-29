@@ -4,8 +4,47 @@
 #include <cstdint>
 #include <iostream>
 #include <cmath>
+#include <deque>
+
 
 #define CACHE_LINE_SIZE 64
+
+struct MSHREntry {
+    uint32_t address;
+    bool is_write;
+    uint32_t write_value;
+    int L1_penality;
+    int L2_penality;
+    bool success;
+};
+
+class MSHR {
+
+public:
+    std::deque<MSHREntry> entries;
+    const std::deque<MSHREntry>& getEntries() const {
+        return entries;
+    }
+
+    void insert(uint32_t address, bool is_write, uint32_t value, int L1_penality, int L2_penality) {
+        entries.push_back({address, is_write, value, L1_penality, L2_penality, false});
+    }
+
+    bool contains(uint32_t address) const {
+        for (const auto& entry : entries) {
+            if (entry.address == address) return true;
+        }
+        return false;
+    }
+
+
+    void flush() {
+        entries.clear();
+    }
+};
+
+
+
 
 struct CacheLine {
     uint32_t data[CACHE_LINE_SIZE/4] = {0};
@@ -60,10 +99,10 @@ class Cache {
         void updateReplacementBits(int idx, int way);
 
         // Read a word from this cache
-        bool read(uint32_t address, uint32_t &read_data);
+        bool read(uint32_t address, uint32_t &read_data, MSHREntry &entry);
 
         // Write a word to this cache
-        bool write(uint32_t address, uint32_t write_data);
+        bool write(uint32_t address, uint32_t write_data, MSHREntry &entry);
 
         // Call this only if you know that a valid line with matching tag exists at that address 
         CacheLine readLine(uint32_t address);
@@ -98,6 +137,7 @@ class Cache {
         }
 };
 
+
 class Memory {
     private:
         std::vector<uint32_t> mem;
@@ -105,6 +145,8 @@ class Memory {
         Cache L2 = Cache("L2", 262144, 8, 59);
         int opt_level;
     public:
+        MSHR mshr;
+        
         Memory() {
             mem.resize(2097152, 0);
             opt_level = 0;
@@ -121,6 +163,8 @@ class Memory {
         // -- currently follows stall-on-miss model, so call every cycle until you see a hit
         bool access(uint32_t address, uint32_t &read_data, uint32_t write_data, bool mem_read, bool mem_write);
 
+        void tick();
+
         // given a starting address and number of words from that starting address
         // this function prints int values at the memory
         void print(uint32_t address, int num_words) {
@@ -129,5 +173,7 @@ class Memory {
             }
         }
 };
+
+
 
 #endif
